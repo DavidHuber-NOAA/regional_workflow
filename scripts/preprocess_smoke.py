@@ -15,6 +15,7 @@ import numpy as np
 import ESMF
 from netCDF4 import Dataset
 import os
+import time
 
 #import fix files
 staticdir = sys.argv[1]
@@ -34,6 +35,9 @@ fg_to_ug=1e6
 EF_FLM = dict({'frst':19,'hwd':9.4,'mxd':14.6,'shrb':9.3,'shrb_grs':10.7,'grs':13.3})
 EF_SML = dict({'frst':28,'hwd':37.7,'mxd':17.6,'shrb':36.6,'shrb_grs':36.7,'grs':38.4})
 
+#Land categories fractional map
+land_cats=["Evergreen_Nleaf_Frst", "Evergreen_Bleaf_Frst", "Deciduous_NleafFrst","Deciduous_Bleaf_Frst","Mixed_Frst","Closed_Shrublands","Open_Shrublands","Woody_Savannas","Savannas","Grasslands","Permanent_Wetlands","Croplands","Urban_Lands","Cropland_NVeg"]
+
 #list of variables to interpolate
 vars_emis = ["FRP_MEAN","FRP_SD","FRE","PM2.5"]
 
@@ -43,14 +47,18 @@ nwges_dir = os.environ.get("NWGES_DIR")
 
 #Fixed files directories
 normal_template_file = staticdir+'/pypost_conus_basic_template.grib2'
-veg_map = staticdir+'/veg_map.nc'
+veg_map = '/scratch1/BMC/acomp/Johana/input_files/frac_LU/LU_frac_NA.nc'  #staticdir+'/veg_map.nc'
 grid_in=  staticdir+'/grid_in.nc'
 weightfile= staticdir+'/weight_file.nc'
 grid_out  = staticdir+'/ds_out_base.nc'
 dummy_hr_rave= staticdir+'/dummy_hr_rave.nc'
-RAVE=ravedir
+
+#RAVE data locations
+RAVE='/scratch2/NAGAPE/epic/David.Huber/rrfs-sd/RAW_RAVE' #ravedir
 intp_dir=newges_dir
 rave_to_intp= predef_grid+"_intp_"
+
+#Input weighting file for interpolation
 filename =weightfile
 
 #Set predefined grid
@@ -72,19 +80,32 @@ def date_range(current_day):
    print('Current day', fcst_YYYYMMDDHH,'Persistance',previous_day)
    return fcst_dates
 
-#Check if interoplated RAVE is available for the previous 24 hours. Create dummy RAVE if given hours are not available
+# Check if interoplated RAVE is available for the previous 24 hours.
 def check_for_intp_rave(intp_dir,fcst_dates,rave_to_intp):
    os.chdir(intp_dir)
+   # Listing of the working directory
    sorted_obj = sorted(os.listdir(intp_dir))
+   # Lists of available and non-available hours
    intp_avail_hours=[]
    intp_non_avail_hours=[]
-   for d in range(len(fcst_dates)):
-      if rave_to_intp+fcst_dates[d]+'00_'+fcst_dates[d]+'00.nc' in sorted_obj:
-         print('RAVE interpolated available for',rave_to_intp+fcst_dates[d]+'00_'+fcst_dates[d]+'00.nc')
-         intp_avail_hours.append(fcst_dates[d])
+   # Loop through the list of forecast dates and determine if they have valid,
+   # interpolated RAVE data
+   # There are four situations here.
+   #   1) the file is missing (interpolate a new file)
+   #   2) the file is present (use it)
+   #   3) there is a link, but it's broken (interpolate a new file)
+   #   4) there is a valid link (use it)
+   for date in fcst_dates:
+      intp_name = rave_to_intp+date+'00_'+date+'00.nc'
+      file_exists = intp_name in sorted_obj
+      is_link = os.path.islink(intp_name)
+      is_valid_link = is_link and os.path.exists(intp_name)
+      if (file_exists and not is_link) or is_valid_link:
+         print('RAVE interpolated available for',rave_to_intp+date+'00_'+date+'00.nc')
+         intp_avail_hours.append(date)
       else:
-         print('Create interpolated RAVE for',rave_to_intp+fcst_dates[d]+'00_'+fcst_dates[d]+'00.nc')
-         intp_non_avail_hours.append(fcst_dates[d])
+         print('Create interpolated RAVE for',rave_to_intp+date+'00_'+date+'00.nc')
+         intp_non_avail_hours.append(date)
    print('Avail_intp_hours',intp_avail_hours,'Non_avail_intp_hours',intp_non_avail_hours)
    return intp_avail_hours,intp_non_avail_hours
 
@@ -97,14 +118,14 @@ def check_for_raw_rave(RAVE,intp_non_avail_hours):
    rave_avail=[]
    rave_avail_hours=[]
    rave_nonavail_hours_test=[]
-   for d in range(len(intp_non_avail_hours)):
-      if raw_rave+intp_non_avail_hours[d]+'00_'+intp_non_avail_hours[d]+'00.nc' in sorted_obj:
-         print('Raw RAVE available for interpolation',raw_rave+intp_non_avail_hours[d]+'00_'+intp_non_avail_hours[d]+'00.nc')
-         rave_avail.append(raw_rave+intp_non_avail_hours[d]+'00_'+intp_non_avail_hours[d]+'00.nc')
-         rave_avail_hours.append(intp_non_avail_hours[d])
+   for date in intp_non_avail_hours:
+      if raw_rave+date+'00_'+date+'00.nc' in sorted_obj:
+         print('Raw RAVE available for interpolation',raw_rave+date+'00_'+date+'00.nc')
+         rave_avail.append(raw_rave+date+'00_'+date+'00.nc')
+         rave_avail_hours.append(date)
       else:
-         print('Raw RAVE non_available for interpolation',raw_rave+intp_non_avail_hours[d]+'00_'+intp_non_avail_hours[d]+'00.nc')
-         rave_nonavail_hours_test.append(intp_non_avail_hours[d])
+         print('Raw RAVE non_available for interpolation',raw_rave+date+'00_'+date+'00.nc')
+         rave_nonavail_hours_test.append(date)
    print("Raw RAVE available",rave_avail_hours, "rave_nonavail_hours_test",rave_nonavail_hours_test)
    return rave_avail,rave_avail_hours,rave_nonavail_hours_test
 
@@ -135,14 +156,14 @@ def creates_st_fields(grid_in,grid_out):
    return srcfield,tgtfield,tgt_latt,tgt_lont,srcgrid,tgtgrid,src_latt,tgt_area
 
 #Define output and variable meta data
-def create_emiss_file(fout):
+def create_emiss_file(fout,rave_file):
     fout.createDimension('t',None)
     fout.createDimension('lat',cols)
     fout.createDimension('lon',rows)
     setattr(fout,'PRODUCT_ALGORITHM_VERSION','Beta')
     setattr(fout,'TIME_RANGE','1 hour')
-    setattr(fout,'RangeBeginningDate)',rave_name[21:25]+'-'+rave_name[25:27]+'-'+rave_name[27:29])
-    setattr(fout,'RangeBeginningTime\(UTC-hour\)',rave_name[29:31])
+    setattr(fout,'RangeBeginningDate)',rave_file[21:25]+'-'+rave_file[25:27]+'-'+rave_file[27:29])
+    setattr(fout,'RangeBeginningTime\(UTC-hour\)',rave_file[29:31])
 def Store_latlon_by_Level(fout,varname,var,long_name,units,dim,fval,sfactor):
     if dim=='2D':
        var_out = fout.createVariable(varname,   'f4', ('lat','lon'))
@@ -162,40 +183,55 @@ def Store_by_Level(fout,varname,long_name,units,dim,fval,sfactor):
        var_out.coordinates='t geolat geolon'
 
 #Open LU map and extract land categories
-def generate_EFs(veg_map,EF_FLM,EF_SML):
+def generate_EFs(veg_map,EF_FLM,EF_SML,land_cats):
    LU_map=(veg_map)
    nc_land= xr.open_dataset(LU_map)
-   vtype= nc_land['vtype'][0,:,:]
-   vtype_val=vtype.values
+   vtype_val= nc_land['vegetation_type_pct'][:,:,:]
    #Processing EF
-   arr_parent_EFs=np.zeros((cols, rows))
-   for i in range(cols):
-      for j in range(rows):
-         efs=vtype_val[i][j]
-         if efs == 1 or efs == 2: #needle and bradleaf
-            EF_12= (0.75*EF_FLM['frst'])+(0.25*EF_SML['frst'])
-            arr_parent_EFs[i][j] = EF_12
-         elif efs == 3 or efs == 4: #deciduos
-            EF_34= (0.80*EF_FLM['hwd'])+(0.20*EF_SML['hwd'])
-            arr_parent_EFs[i][j] = EF_34
-         elif efs == 5: # mixed
-            EF_5= (0.85*EF_FLM['mxd'])+(0.15*EF_SML['mxd'])
-            arr_parent_EFs[i][j] = EF_5
-         elif efs == 6 or efs == 7: #Shrublands
-            EF_6= (0.95*EF_FLM['shrb'])+(0.05*EF_SML['shrb'])
-            arr_parent_EFs[i][j] = EF_6
-         elif efs == 8: #woody savannas
-            EF_7= (0.95*EF_FLM['shrb_grs'])+(0.05*EF_SML['shrb_grs'])
-            arr_parent_EFs[i][j] = EF_7
-         elif efs == 9 or efs == 10: #savannas & grasslandas
-            EF_8= (0.95*EF_FLM['grs'])+(0.05*EF_SML['grs'])
-            arr_parent_EFs[i][j] = EF_8
-         elif efs == 12 or efs == 14 : #cropland and natural veg.
-            EF_9= (0.95*EF_FLM['grs'])+(0.05*EF_SML['grs'])
-            arr_parent_EFs[i][j] = EF_9
-         else:
-            EF_rest= 0
-            arr_parent_EFs[i][j] = EF_rest
+   arr_parent_EFs=[]
+   for lc,i in zip(land_cats,range(len(land_cats))):
+      vtype_ind=vtype_val[i,:,:]
+      if lc == "Evergreen_Nleaf_Frst":
+         Nleaf_EF=vtype_ind*((0.75*EF_FLM['frst'])+(0.25*EF_SML['frst']))
+         arr_parent_EFs.append(Nleaf_EF.values.flatten())
+      elif lc ==  "Evergreen_Bleaf_Frst":
+         Bleaf_EF=vtype_ind*((0.75*EF_FLM['frst'])+(0.25*EF_SML['frst']))
+         arr_parent_EFs.append(Bleaf_EF.values.flatten())
+      elif lc == "Deciduous_NleafFrst":
+         Dec_Nleaf_EF=vtype_ind*((0.80*EF_FLM['hwd'])+(0.20*EF_SML['hwd']))
+         arr_parent_EFs.append(Dec_Nleaf_EF.values.flatten())
+      elif lc == "Deciduous_Bleaf_Frst":
+         Dec_Bleaf_EF=vtype_ind*((0.80*EF_FLM['hwd'])+(0.20*EF_SML['hwd']))
+         arr_parent_EFs.append(Dec_Bleaf_EF.values.flatten())
+      elif lc == "Mixed_Frst":
+         Mix_frst_EF=vtype_ind*((0.85*EF_FLM['mxd'])+(0.15*EF_SML['mxd']))
+         arr_parent_EFs.append(Mix_frst_EF.values.flatten())
+      elif lc == "Closed_Shrublands":
+         Cls_shrub_EF=vtype_ind*((0.95*EF_FLM['shrb'])+(0.05*EF_SML['shrb']))
+         arr_parent_EFs.append(Cls_shrub_EF.values.flatten())
+      elif lc == "Open_Shrublands":
+         Opn_shrub_EF=vtype_ind*((0.95*EF_FLM['shrb'])+(0.05*EF_SML['shrb']))
+         arr_parent_EFs.append(Opn_shrub_EF.values.flatten())
+      elif lc == "Woody_Savannas":
+         Wdy_sv_EF=vtype_ind*((0.95*EF_FLM['shrb_grs'])+(0.05*EF_SML['shrb_grs']))
+         arr_parent_EFs.append(Wdy_sv_EF.values.flatten())
+      elif lc == "Savannas":
+         Savn_EF=vtype_ind*((0.95*EF_FLM['grs'])+(0.05*EF_SML['grs']))
+         arr_parent_EFs.append(Savn_EF.values.flatten())
+      elif lc == "Grasslands":
+         Grass_EF=vtype_ind*((0.95*EF_FLM['grs'])+(0.05*EF_SML['grs']))
+         arr_parent_EFs.append(Grass_EF.values.flatten())
+      elif lc == "Croplands":
+         Crops_EF=vtype_ind*((0.95*EF_FLM['grs'])+(0.05*EF_SML['grs']))
+         arr_parent_EFs.append(Crops_EF.values.flatten())
+      elif lc == "Cropland_NVeg":
+         NVeg_EF=vtype_ind*((0.95*EF_FLM['grs'])+(0.05*EF_SML['grs']))
+         arr_parent_EFs.append(NVeg_EF.values.flatten())
+      else:
+         arr_parent_EFs.append(0.)
+   arr_parent_EFs_flat=sum(arr_parent_EFs)
+   arr_parent_EFs_reshape=np.reshape(arr_parent_EFs_flat,(cols,rows))
+   arr_parent_EFs=arr_parent_EFs_reshape
    return arr_parent_EFs
 
 #create a dummy hr rave interpolated file for rave_non_avail_hours and when regridder fails
@@ -208,15 +244,16 @@ def create_dummy(intp_dir,dummy_hr_rave,generate_hr_dummy,rave_avail,rave_nonava
          missing_rave=xr.zeros_like(dummy_rave)
          missing_rave.attrs['RangeBeginningDate']=i[0:4]+'-'+i[4:6]+'-'+i[6:8]
          missing_rave.attrs['RangeBeginningTime\(UTC-hour\)']= i[8:10]
-         missing_rave.to_netcdf(rave_to_intp+i[21:49],unlimited_dims={'t':True})
+         missing_rave.to_netcdf(rave_to_intp+'dmy_'+i[21:49],unlimited_dims={'t':True})
    else:
       for i in rave_nonavail_hours_test:
-         print('Producing RAVE dummy files for:',i)
+         print('Producing RAVE dummy file for:',i)
          dummy_rave=xr.open_dataset(dummy_hr_rave)
          missing_rave=xr.zeros_like(dummy_rave)
          missing_rave.attrs['RangeBeginningDate']=i[0:4]+'-'+i[4:6]+'-'+i[6:8]
          missing_rave.attrs['RangeBeginningTime\(UTC-hour\)']= i[8:10]
-         missing_rave.to_netcdf(rave_to_intp+i+'00_'+i+'00.nc',unlimited_dims={'t':True})
+         missing_rave.to_netcdf('dmy_'+rave_to_intp+i+'00_'+i+'00.nc',unlimited_dims={'t':True})
+         print('dmy_'+rave_to_intp+i+'00_'+i+'00.nc')
 
 
 #Sort raw RAVE, create source and target filelds, and compute emissions factors
@@ -224,7 +261,7 @@ fcst_dates=date_range(current_day)
 intp_avail_hours,intp_non_avail_hours=check_for_intp_rave(intp_dir,fcst_dates,rave_to_intp)
 rave_avail,rave_avail_hours,rave_nonavail_hours_test=check_for_raw_rave(RAVE,intp_non_avail_hours)
 srcfield,tgtfield,tgt_latt,tgt_lont,srcgrid,tgtgrid,src_latt,tgt_area=creates_st_fields(grid_in,grid_out)
-arr_parent_EFs=generate_EFs(veg_map,EF_FLM,EF_SML)
+arr_parent_EFs=generate_EFs(veg_map,EF_FLM,EF_SML,land_cats)
 #generate regridder
 try:
    print('GENERATING REGRIDDER')
@@ -239,19 +276,19 @@ else:
    generate_hr_dummy=False
 #process RAVE available for interpolation
 sorted_obj = sorted(os.listdir(RAVE))
-for f in range(len(rave_avail)):
+iii = 0
+for rave_file in rave_avail:
    os.chdir(RAVE)
-   if use_dummy_emiss==False and rave_avail[f] in sorted_obj:
-      print('Interpolating:',rave_avail[f])
-      rave_name=rave_avail[f]
-      ds_togrid=xr.open_dataset(rave_avail[f])
+   if use_dummy_emiss==False and rave_file in sorted_obj:
+      print('Interpolating:',rave_file)
+      ds_togrid=xr.open_dataset(rave_file)
       QA=ds_togrid['QA']       #QC flags for fire emiss
       FRE_threshold= ds_togrid['FRE']
       print('=============before regridding===========','FRP_MEAN')
       print(np.sum(ds_togrid['FRP_MEAN'],axis=(1,2)))
       os.chdir(intp_dir)
-      fout=Dataset(rave_to_intp+rave_name[21:33]+'_'+rave_name[21:33]+'.nc','w')
-      create_emiss_file(fout)
+      fout=Dataset(rave_to_intp+rave_file[21:33]+'_'+rave_file[21:33]+'.nc','w')
+      create_emiss_file(fout,rave_file)
       Store_latlon_by_Level(fout,'geolat',tgt_latt,'cell center latitude','degrees_north','2D','-9999.f','1.f')
       Store_latlon_by_Level(fout,'geolon',tgt_lont,'cell center longitude','degrees_east','2D','-9999.f','1.f')
       for svar in vars_emis:
@@ -292,5 +329,6 @@ for f in range(len(rave_avail)):
             fout.variables[svar][0,:,:] = tgt_rate
       ds_togrid.close()
       fout.close()
+   iii += 1
 #Create dummy hr files
 create_dummy(intp_dir,dummy_hr_rave,generate_hr_dummy,rave_avail,rave_nonavail_hours_test,rave_to_intp)
